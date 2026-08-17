@@ -1,9 +1,9 @@
 export type UsageAlertLevel = "warning" | "exceeded";
 
-export function usageAlertLevel(totalBytes: number, limitBytes: number | null): UsageAlertLevel | null {
+export function usageAlertLevel(totalBytes: number, limitBytes: number | null, warningPercentage = 80): UsageAlertLevel | null {
   if (!limitBytes || limitBytes <= 0) return null;
   if (totalBytes >= limitBytes) return "exceeded";
-  if (totalBytes >= limitBytes * 0.8) return "warning";
+  if (totalBytes >= limitBytes * Math.min(99, Math.max(1, warningPercentage)) / 100) return "warning";
   return null;
 }
 

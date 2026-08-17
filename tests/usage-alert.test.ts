@@ -6,5 +6,6 @@ describe("usageAlertLevel", () => {
   it("لا ينشئ تنبيهًا قبل بلوغ 80٪", () => expect(usageAlertLevel(799, limit)).toBeNull());
   it("ينشئ تحذيرًا عند 80٪", () => expect(usageAlertLevel(800, limit)).toBe("warning"));
   it("ينشئ تنبيه تجاوز عند 100٪", () => expect(usageAlertLevel(1000, limit)).toBe("exceeded"));
+  it("يقبل عتبة تحذير مخصصة", () => expect(usageAlertLevel(650, limit, 65)).toBe("warning"));
   it("يرقي التحذير ولا يكرر المستوى نفسه", () => { expect(isStrongerAlert("exceeded", "warning")).toBe(true); expect(isStrongerAlert("warning", "warning")).toBe(false); });
 });
