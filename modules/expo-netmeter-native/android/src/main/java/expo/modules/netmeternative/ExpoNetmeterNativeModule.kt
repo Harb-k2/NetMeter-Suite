@@ -17,6 +17,7 @@ class ExpoNetmeterNativeModule : Module() {
     Name("ExpoNetmeterNative")
     AsyncFunction("getSnapshot") { currentSnapshot(requireContext()) }
     AsyncFunction("openUsageAccessSettings") { context: Context -> context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); true }
+    AsyncFunction("configureUsageLimit") { context: Context, limitBytes: Double?, notificationsEnabled: Boolean -> NetmeterMonitorService.configure(context, limitBytes?.toLong(), notificationsEnabled); true }
     AsyncFunction("startForegroundMonitoring") { context: Context -> NetmeterMonitorService.start(context); true }
     AsyncFunction("stopForegroundMonitoring") { context: Context -> NetmeterMonitorService.stop(context); true }
   }

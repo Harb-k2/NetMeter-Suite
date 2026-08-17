@@ -14,7 +14,7 @@ from queue import Empty, Queue
 
 import psutil
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
 
 APP_DIR = Path.home() / ".netmeter-suite"
 DB_PATH = APP_DIR / "netmeter.sqlite3"
@@ -31,6 +31,13 @@ def safe_delta(previous: tuple[int, int] | None, current: tuple[int, int]) -> tu
     if previous is None or current[0] < previous[0] or current[1] < previous[1]:
         return None
     return current[0] - previous[0], current[1] - previous[1]
+
+
+def usage_alert_level(total: int, limit: int | None) -> str | None:
+    if not limit or limit <= 0: return None
+    if total >= limit: return "exceeded"
+    if total >= limit * 0.8: return "warning"
+    return None
 
 
 def run(command: list[str]) -> str:
@@ -64,6 +71,8 @@ class Store:
         self.db = sqlite3.connect(DB_PATH, check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS daily_usage(network_key TEXT NOT NULL,label TEXT NOT NULL,date TEXT NOT NULL,received INTEGER NOT NULL DEFAULT 0,transmitted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(network_key,date))")
         self.db.execute("CREATE TABLE IF NOT EXISTS speed_results(id INTEGER PRIMARY KEY,network_key TEXT NOT NULL,measured_at TEXT NOT NULL,download REAL,upload REAL,latency REAL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS network_limits(network_key TEXT PRIMARY KEY,limit_bytes INTEGER NOT NULL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS usage_alerts(network_key TEXT NOT NULL,date TEXT NOT NULL,level TEXT NOT NULL,PRIMARY KEY(network_key,date))")
         self.db.commit()
 
     def record(self, key: str, label: str, received: int, transmitted: int) -> None:
@@ -78,6 +87,23 @@ class Store:
 
     def speed(self, key: str, download: float, upload: float, latency: float) -> None:
         self.db.execute("INSERT INTO speed_results(network_key,measured_at,download,upload,latency) VALUES(?,?,?,?,?)", (key, dt.datetime.now().isoformat(timespec="seconds"), download, upload, latency)); self.db.commit()
+
+    def limit(self, key: str) -> int | None:
+        row = self.db.execute("SELECT limit_bytes FROM network_limits WHERE network_key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_limit(self, key: str, limit: int | None) -> None:
+        if limit is None: self.db.execute("DELETE FROM network_limits WHERE network_key=?", (key,))
+        else: self.db.execute("INSERT INTO network_limits(network_key,limit_bytes) VALUES(?,?) ON CONFLICT(network_key) DO UPDATE SET limit_bytes=excluded.limit_bytes", (key, limit))
+        self.db.commit()
+
+    def claim_alert(self, key: str, total: int) -> tuple[str, int] | None:
+        limit = self.limit(key); level = usage_alert_level(total, limit)
+        if not level or not limit: return None
+        date = dt.date.today().isoformat(); previous = self.db.execute("SELECT level FROM usage_alerts WHERE network_key=? AND date=?", (key, date)).fetchone()
+        if previous and (previous[0] == level or previous[0] == "exceeded"): return None
+        self.db.execute("INSERT INTO usage_alerts(network_key,date,level) VALUES(?,?,?) ON CONFLICT(network_key,date) DO UPDATE SET level=excluded.level", (key, date, level)); self.db.commit()
+        return level, limit
 
 
 class Monitor:
@@ -120,13 +146,13 @@ class App(tk.Tk):
         body = tk.Frame(self, bg="#F6F9FC"); body.pack(fill="both", expand=True, padx=22, pady=18)
         for title, variable in (("الشبكة الحالية", self.network), ("استهلاك اليوم لهذه الشبكة", self.usage), ("آخر قياس", self.speed)):
             card = tk.Frame(body, bg="white", highlightbackground="#DCE5EF", highlightthickness=1); card.pack(fill="x", pady=5); tk.Label(card, text=title, bg="white", fg="#5D6B7B", font=("Arial", 10)).pack(anchor="e", padx=14, pady=(10, 0)); tk.Label(card, textvariable=variable, bg="white", fg="#102A43", font=("Arial", 15, "bold")).pack(anchor="e", padx=14, pady=(2, 10))
-        actions = tk.Frame(body, bg="#F6F9FC"); actions.pack(fill="x", pady=9); ttk.Button(actions, text="قياس السرعة الآن", command=self.run_test).pack(side="right"); ttk.Button(actions, text="تحديث الشبكات", command=self.refresh_table).pack(side="right", padx=8)
+        actions = tk.Frame(body, bg="#F6F9FC"); actions.pack(fill="x", pady=9); ttk.Button(actions, text="قياس السرعة الآن", command=self.run_test).pack(side="right"); ttk.Button(actions, text="تعيين حد الشبكة", command=self.configure_limit).pack(side="right", padx=8); ttk.Button(actions, text="تحديث الشبكات", command=self.refresh_table).pack(side="right", padx=8)
         self.table = ttk.Treeview(body, columns=("network", "usage"), show="headings", height=5); self.table.heading("network", text="الشبكة"); self.table.heading("usage", text="الاستهلاك الإجمالي"); self.table.column("network", width=350, anchor="e"); self.table.column("usage", width=190, anchor="e"); self.table.pack(fill="both", expand=True); tk.Label(body, textvariable=self.status, bg="#F6F9FC", fg="#5D6B7B", font=("Arial", 10)).pack(anchor="e", pady=(8, 0)); self.refresh_table()
 
     def poll(self) -> None:
         active = self.monitor.tick()
         if active:
-            key, label = active; received, sent = self.store.today(key); self.network.set(label); self.usage.set(f"تنزيل {format_bytes(received)}   •   رفع {format_bytes(sent)}")
+            key, label = active; received, sent = self.store.today(key); total = received + sent; limit = self.store.limit(key); self.network.set(label); self.usage.set(f"تنزيل {format_bytes(received)}   •   رفع {format_bytes(sent)}" + (f"   •   الحد {format_bytes(limit)}" if limit else "")); self.present_alert(self.store.claim_alert(key, total), label, total)
         else: self.network.set("لا توجد واجهة شبكة متصلة")
         try:
             while True:
@@ -140,6 +166,19 @@ class App(tk.Tk):
     def refresh_table(self) -> None:
         self.table.delete(*self.table.get_children())
         for label, received, sent in self.store.rows(): self.table.insert("", "end", values=(label, format_bytes(received + sent)))
+
+    def configure_limit(self) -> None:
+        key = self.monitor.last_key
+        if not key: self.status.set("اتصل بالشبكة التي تريد تعيين الحد لها أولاً"); return
+        current = self.store.limit(key); value = simpledialog.askfloat("حد استهلاك الشبكة", "أدخل الحد اليومي لهذه الشبكة بالميغابايت. اتركه فارغًا لإلغاء الحد.", initialvalue=(current / 1024 / 1024 if current else None), minvalue=0, parent=self)
+        if value is None: return
+        self.store.set_limit(key, int(value * 1024 * 1024) if value > 0 else None); self.status.set("تم حفظ حد الشبكة. يظهر تحذير عند 80٪ وتنبيه تجاوز عند 100٪.")
+
+    def present_alert(self, alert: tuple[str, int] | None, label: str, total: int) -> None:
+        if not alert: return
+        level, limit = alert; self.bell()
+        if level == "exceeded": messagebox.showwarning("تم تجاوز حد البيانات", f"{label}: استخدمت {format_bytes(total)} من حد {format_bytes(limit)} اليوم.", parent=self)
+        else: messagebox.showwarning("اقتربت من حد البيانات", f"{label}: استخدمت {format_bytes(total)} من حد {format_bytes(limit)} اليوم.", parent=self)
 
     def run_test(self) -> None:
         if not self.monitor.last_key: self.status.set("اتصل بالإنترنت أولاً ثم أعد المحاولة"); return
