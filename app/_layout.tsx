@@ -8,6 +8,7 @@ import "react-native-reanimated";
 import { Platform } from "react-native";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
+import { MotionProvider } from "@/lib/motion-provider";
 import {
   SafeAreaFrameContext,
   SafeAreaInsetsContext,
@@ -99,7 +100,7 @@ export default function RootLayout() {
 
   if (shouldOverrideSafeArea) {
     return (
-      <ThemeProvider>
+      <ThemeProvider><MotionProvider>
         <SafeAreaProvider initialMetrics={providerInitialMetrics}>
           <SafeAreaFrameContext.Provider value={frame}>
             <SafeAreaInsetsContext.Provider value={insets}>
@@ -107,13 +108,13 @@ export default function RootLayout() {
             </SafeAreaInsetsContext.Provider>
           </SafeAreaFrameContext.Provider>
         </SafeAreaProvider>
-      </ThemeProvider>
+      </MotionProvider></ThemeProvider>
     );
   }
 
   return (
-    <ThemeProvider>
+    <ThemeProvider><MotionProvider>
       <SafeAreaProvider initialMetrics={providerInitialMetrics}>{content}</SafeAreaProvider>
-    </ThemeProvider>
+    </MotionProvider></ThemeProvider>
   );
 }

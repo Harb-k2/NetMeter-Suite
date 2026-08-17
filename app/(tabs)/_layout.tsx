@@ -11,6 +11,7 @@ export default function TabsLayout() {
     <Tabs.Screen name="index" options={{ title: "الرئيسية", tabBarIcon: ({ color }) => <IconSymbol name="house.fill" size={25} color={color} /> }} />
     <Tabs.Screen name="speed" options={{ title: "السرعة", tabBarIcon: ({ color }) => <IconSymbol name="gauge" size={25} color={color} /> }} />
     <Tabs.Screen name="networks" options={{ title: "الشبكات", tabBarIcon: ({ color }) => <IconSymbol name="wifi" size={25} color={color} /> }} />
+    <Tabs.Screen name="calendar" options={{ title: "التقويم", tabBarIcon: ({ color }) => <IconSymbol name="calendar" size={25} color={color} /> }} />
     <Tabs.Screen name="settings" options={{ title: "الإعدادات", tabBarIcon: ({ color }) => <IconSymbol name="gear" size={25} color={color} /> }} />
   </Tabs>;
 }

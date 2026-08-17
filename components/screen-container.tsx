@@ -2,6 +2,7 @@ import { View, type ViewProps } from "react-native";
 import { SafeAreaView, type Edge } from "react-native-safe-area-context";
 
 import { cn } from "@/lib/utils";
+import { ScreenTransition } from "@/components/netmeter/screen-transition";
 
 export interface ScreenContainerProps extends ViewProps {
   /**
@@ -61,7 +62,7 @@ export function ScreenContainer({
         className={cn("flex-1", safeAreaClassName)}
         style={style}
       >
-        <View className={cn("flex-1", className)}>{children}</View>
+        <ScreenTransition><View className={cn("flex-1", className)}>{children}</View></ScreenTransition>
       </SafeAreaView>
     </View>
   );

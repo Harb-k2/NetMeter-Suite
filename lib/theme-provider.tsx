@@ -1,79 +1,25 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Appearance, View, useColorScheme as useSystemColorScheme } from "react-native";
 import { colorScheme as nativewindColorScheme, vars } from "nativewind";
-
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { SchemeColors, type ColorScheme } from "@/constants/theme";
+import type { ThemeMode } from "@/lib/netmeter/types";
 
-type ThemeContextValue = {
-  colorScheme: ColorScheme;
-  setColorScheme: (scheme: ColorScheme) => void;
-};
-
+type ThemeContextValue = { colorScheme: ColorScheme; themeMode: ThemeMode; setThemeMode: (mode: ThemeMode) => void; setColorScheme: (scheme: ColorScheme) => void };
 const ThemeContext = createContext<ThemeContextValue | null>(null);
+const KEY = "netmeter-suite:theme-mode";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const systemScheme = useSystemColorScheme() ?? "light";
-  const [colorScheme, setColorSchemeState] = useState<ColorScheme>(systemScheme);
-
-  const applyScheme = useCallback((scheme: ColorScheme) => {
-    nativewindColorScheme.set(scheme);
-    Appearance.setColorScheme?.(scheme);
-    if (typeof document !== "undefined") {
-      const root = document.documentElement;
-      root.dataset.theme = scheme;
-      root.classList.toggle("dark", scheme === "dark");
-      const palette = SchemeColors[scheme];
-      Object.entries(palette).forEach(([token, value]) => {
-        root.style.setProperty(`--color-${token}`, value);
-      });
-    }
-  }, []);
-
-  const setColorScheme = useCallback((scheme: ColorScheme) => {
-    setColorSchemeState(scheme);
-    applyScheme(scheme);
-  }, [applyScheme]);
-
-  useEffect(() => {
-    applyScheme(colorScheme);
-  }, [applyScheme, colorScheme]);
-
-  const themeVariables = useMemo(
-    () =>
-      vars({
-        "color-primary": SchemeColors[colorScheme].primary,
-        "color-background": SchemeColors[colorScheme].background,
-        "color-surface": SchemeColors[colorScheme].surface,
-        "color-foreground": SchemeColors[colorScheme].foreground,
-        "color-muted": SchemeColors[colorScheme].muted,
-        "color-border": SchemeColors[colorScheme].border,
-        "color-success": SchemeColors[colorScheme].success,
-        "color-warning": SchemeColors[colorScheme].warning,
-        "color-error": SchemeColors[colorScheme].error,
-      }),
-    [colorScheme],
-  );
-
-  const value = useMemo(
-    () => ({
-      colorScheme,
-      setColorScheme,
-    }),
-    [colorScheme, setColorScheme],
-  );
-  console.log(value, themeVariables)
-
-  return (
-    <ThemeContext.Provider value={value}>
-      <View style={[{ flex: 1 }, themeVariables]}>{children}</View>
-    </ThemeContext.Provider>
-  );
+  const systemScheme = (useSystemColorScheme() ?? "light") as ColorScheme;
+  const [themeMode, setThemeModeState] = useState<ThemeMode>("system");
+  const colorScheme: ColorScheme = themeMode === "system" ? systemScheme : themeMode;
+  const applyScheme = useCallback((scheme: ColorScheme) => { nativewindColorScheme.set(scheme); if (typeof document !== "undefined") { const root = document.documentElement; root.dataset.theme = scheme; root.classList.toggle("dark", scheme === "dark"); Object.entries(SchemeColors[scheme]).forEach(([token, value]) => root.style.setProperty(`--color-${token}`, value)); } }, []);
+  useEffect(() => { void AsyncStorage.getItem(KEY).then((mode) => { if (mode === "system" || mode === "light" || mode === "dark") setThemeModeState(mode); }); }, []);
+  useEffect(() => { applyScheme(colorScheme); }, [applyScheme, colorScheme]);
+  const setThemeMode = useCallback((mode: ThemeMode) => { setThemeModeState(mode); void AsyncStorage.setItem(KEY, mode); Appearance.setColorScheme?.(mode === "system" ? null : mode); }, []);
+  const themeVariables = useMemo(() => vars(Object.fromEntries(Object.entries(SchemeColors[colorScheme]).map(([token, value]) => [`color-${token}`, value]))), [colorScheme]);
+  const setColorScheme = useCallback((scheme: ColorScheme) => setThemeMode(scheme), [setThemeMode]);
+  const value = useMemo(() => ({ colorScheme, themeMode, setThemeMode, setColorScheme }), [colorScheme, themeMode, setThemeMode, setColorScheme]);
+  return <ThemeContext.Provider value={value}><View style={[{ flex: 1 }, themeVariables]}>{children}</View></ThemeContext.Provider>;
 }
-
-export function useThemeContext(): ThemeContextValue {
-  const ctx = useContext(ThemeContext);
-  if (!ctx) {
-    throw new Error("useThemeContext must be used within ThemeProvider");
-  }
-  return ctx;
-}
+export function useThemeContext() { const context = useContext(ThemeContext); if (!context) throw new Error("useThemeContext must be used within ThemeProvider"); return context; }
