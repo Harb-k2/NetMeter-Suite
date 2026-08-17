@@ -1,0 +1,6 @@
+import type { SpeedResult } from "./types";
+const now = () => performance.now();
+async function latency() { const start = now(); const result = await fetch(`https://speed.cloudflare.com/__down?bytes=0&t=${Date.now()}`); if (!result.ok) throw new Error("تعذر الوصول إلى خادم الاختبار"); return now() - start; }
+async function download() { const count = 2_000_000, start = now(), response = await fetch(`https://speed.cloudflare.com/__down?bytes=${count}&t=${Date.now()}`), data = await response.arrayBuffer(); return (data.byteLength * 8) / ((now() - start) * 1000); }
+async function upload() { const payload = new Uint8Array(500_000), start = now(), response = await fetch(`https://speed.cloudflare.com/__up?t=${Date.now()}`, { method: "POST", body: payload }); if (!response.ok) throw new Error("تعذر اختبار الرفع"); return (payload.byteLength * 8) / ((now() - start) * 1000); }
+export async function measure(networkId: string): Promise<SpeedResult> { const measuredAt = new Date().toISOString(); try { return { id: `${measuredAt}:${networkId}`, networkId, measuredAt, latencyMs: await latency(), downloadMbps: await download(), uploadMbps: await upload() }; } catch (error) { return { id: `${measuredAt}:${networkId}`, networkId, measuredAt, latencyMs: null, downloadMbps: null, uploadMbps: null, errorMessage: error instanceof Error ? error.message : "فشل القياس" }; } }

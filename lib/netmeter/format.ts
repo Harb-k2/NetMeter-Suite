@@ -1,0 +1,3 @@
+export const todayKey = (date = new Date()) => date.toISOString().slice(0, 10);
+export function bytes(value: number | null | undefined): string { if (value === null || value === undefined) return "غير متاح"; const units = ["بايت", "ك.ب", "م.ب", "غ.ب", "ت.ب"]; let current = Math.max(0, value), index = 0; while (current >= 1024 && index < units.length - 1) { current /= 1024; index += 1; } return `${current >= 100 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`; }
+export const mbps = (value: number | null | undefined) => value === null || value === undefined ? "—" : `${value.toFixed(1)} Mbps`;

@@ -28,11 +28,11 @@ const schemeFromBundleId = `manus${timestamp}`;
 
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "NetMeter Suite",
+  appName: "NetMeter",
   appSlug: "netmeter-suite",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "",
+  logoUrl: "/manus-storage/netmeter-icon-final_fb0f30d0.png",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
@@ -64,7 +64,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    permissions: ["POST_NOTIFICATIONS", "ACCESS_FINE_LOCATION", "NEARBY_WIFI_DEVICES", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "PACKAGE_USAGE_STATS"],
     intentFilters: [
       {
         action: "VIEW",

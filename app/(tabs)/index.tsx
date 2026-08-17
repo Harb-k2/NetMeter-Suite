@@ -1,48 +1,25 @@
-import { ScrollView, Text, View, TouchableOpacity } from "react-native";
-
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { MetricCard } from "@/components/netmeter/card";
+import { bytes, mbps } from "@/lib/netmeter/format";
+import { snapshot } from "@/lib/netmeter/network";
+import { capture, dashboard } from "@/lib/netmeter/storage";
+import type { Dashboard } from "@/lib/netmeter/types";
+import { useColors } from "@/hooks/use-colors";
 
-/**
- * Home Screen - NativeWind Example
- *
- * This template uses NativeWind (Tailwind CSS for React Native).
- * You can use familiar Tailwind classes directly in className props.
- *
- * Key patterns:
- * - Use `className` instead of `style` for most styling
- * - Theme colors: use tokens directly (bg-background, text-foreground, bg-primary, etc.); no dark: prefix needed
- * - Responsive: standard Tailwind breakpoints work on web
- * - Custom colors defined in tailwind.config.js
- */
 export default function HomeScreen() {
-  return (
-    <ScreenContainer className="p-6">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
-        <View className="flex-1 gap-8">
-          {/* Hero Section */}
-          <View className="items-center gap-2">
-            <Text className="text-4xl font-bold text-foreground">Welcome</Text>
-            <Text className="text-base text-muted text-center">
-              Edit app/(tabs)/index.tsx to get started
-            </Text>
-          </View>
-
-          {/* Example Card */}
-          <View className="w-full max-w-sm self-center bg-surface rounded-2xl p-6 shadow-sm border border-border">
-            <Text className="text-lg font-semibold text-foreground mb-2">NativeWind Ready</Text>
-            <Text className="text-sm text-muted leading-relaxed">
-              Use Tailwind CSS classes directly in your React Native components.
-            </Text>
-          </View>
-
-          {/* Example Button */}
-          <View className="items-center">
-            <TouchableOpacity className="bg-primary px-6 py-3 rounded-full active:opacity-80">
-              <Text className="text-background font-semibold">Get Started</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </ScrollView>
-    </ScreenContainer>
-  );
+  const colors = useColors(); const [data, setData] = useState<Dashboard | null>(null); const [busy, setBusy] = useState(true);
+  const refresh = useCallback(async () => { setBusy(true); try { const value = await snapshot(); setData(dashboard(await capture(value), value)); } finally { setBusy(false); } }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+  const total = (data?.usage?.receivedBytes ?? 0) + (data?.usage?.transmittedBytes ?? 0), limit = data?.settings.dailyLimitBytes, percent = limit ? Math.min(100, total / limit * 100) : 0;
+  return <ScreenContainer className="px-5"><ScrollView contentContainerStyle={{ paddingVertical: 16, gap: 14 }}>
+    <View style={{ gap: 4 }}><Text style={{ color: colors.foreground, textAlign: "right", fontSize: 30, fontWeight: "800" }}>NetMeter</Text><Text style={{ color: colors.muted, textAlign: "right" }}>مراقبة سرعة الإنترنت والاستهلاك</Text></View>
+    <MetricCard title="الشبكة المتصلة الآن" value={data?.snapshot?.network.label ?? "جارِ التحقق…"} hint={data?.snapshot?.nativeCapabilities ? (data.snapshot.usageAccessGranted ? "قراءة النظام مفعّلة" : "فعّل إحصاءات الاستخدام للدقة") : "يتطلب الاسم الدقيق بناء Android مخصصًا"} />
+    <MetricCard title="استهلاك اليوم لهذه الشبكة" value={bytes(total)} hint={`تنزيل ${bytes(data?.usage?.receivedBytes ?? 0)} · رفع ${bytes(data?.usage?.transmittedBytes ?? 0)}`}>{limit ? <View style={{ height: 7, borderRadius: 20, backgroundColor: colors.border, overflow: "hidden", marginTop: 8 }}><View style={{ height: 7, width: `${percent}%`, backgroundColor: percent > 85 ? colors.warning : colors.success }} /></View> : null}</MetricCard>
+    <View style={{ flexDirection: "row-reverse", gap: 12 }}><View style={{ flex: 1 }}><MetricCard title="آخر تنزيل" value={mbps(data?.lastSpeed?.downloadMbps)} /></View><View style={{ flex: 1 }}><MetricCard title="آخر رفع" value={mbps(data?.lastSpeed?.uploadMbps)} /></View></View>
+    <Pressable onPress={() => router.push("/(tabs)/speed" as never)} style={({ pressed }) => ({ backgroundColor: colors.tint, padding: 17, borderRadius: 16, opacity: pressed ? 0.82 : 1 })}><Text style={{ color: "#fff", textAlign: "center", fontWeight: "800", fontSize: 16 }}>بدء قياس السرعة</Text></Pressable>
+    <Pressable onPress={() => void refresh()} style={({ pressed }) => ({ padding: 11, opacity: pressed ? 0.6 : 1 })}>{busy ? <ActivityIndicator color={colors.tint} /> : <Text style={{ color: colors.tint, textAlign: "center", fontWeight: "700" }}>تحديث قراءة الشبكة</Text>}</Pressable>
+  </ScrollView></ScreenContainer>;
 }

@@ -1,0 +1,5 @@
+plugins { id 'com.android.library' }
+group = 'expo.modules.netmeternative'
+version = '1.0.0'
+android { namespace 'expo.modules.netmeternative'; defaultConfig { minSdkVersion 24 } }
+dependencies { implementation project(':expo-modules-core') }
