@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """NetMeter Suite: local per-network monitor for Windows and Kali Linux."""
 from __future__ import annotations
 
-import datetime as dt
 import csv
+import datetime as dt
 import platform
 import sqlite3
 import subprocess
@@ -19,6 +18,9 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_DIR = Path.home() / ".netmeter-suite"
 DB_PATH = APP_DIR / "netmeter.sqlite3"
+POLL_INTERVAL_MS = 5_000
+SSID_CACHE_SECONDS = 12
+COMMIT_INTERVAL_SECONDS = 12
 
 
 def format_bytes(value: int | float) -> str:
@@ -35,9 +37,12 @@ def safe_delta(previous: tuple[int, int] | None, current: tuple[int, int]) -> tu
 
 
 def usage_alert_level(total: int, limit: int | None, warning_percentage: int = 80) -> str | None:
-    if not limit or limit <= 0: return None
-    if total >= limit: return "exceeded"
-    if total >= limit * max(50, min(99, warning_percentage)) / 100: return "warning"
+    if not limit or limit <= 0:
+        return None
+    if total >= limit:
+        return "exceeded"
+    if total >= limit * max(50, min(99, warning_percentage)) / 100:
+        return "warning"
     return None
 
 
@@ -53,10 +58,12 @@ def ssid() -> str | None:
         for line in run(["netsh", "wlan", "show", "interfaces"]).splitlines():
             if "SSID" in line and "BSSID" not in line and ":" in line:
                 value = line.split(":", 1)[1].strip()
-                if value: return value
+                if value:
+                    return value
         return None
     for line in run(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"]).splitlines():
-        if line.startswith("yes:") and line[4:].strip(): return line[4:].strip()
+        if line.startswith("yes:") and line[4:].strip():
+            return line[4:].strip()
     return run(["iwgetid", "-r"]).strip() or None
 
 
@@ -67,143 +74,322 @@ def active_interface() -> str | None:
 
 
 class Store:
+    """SQLite store optimized for frequent, local monitoring writes."""
+
     def __init__(self) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
+        self.db.execute("PRAGMA busy_timeout=3000")
         self.db.execute("CREATE TABLE IF NOT EXISTS daily_usage(network_key TEXT NOT NULL,label TEXT NOT NULL,date TEXT NOT NULL,received INTEGER NOT NULL DEFAULT 0,transmitted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(network_key,date))")
         self.db.execute("CREATE TABLE IF NOT EXISTS speed_results(id INTEGER PRIMARY KEY,network_key TEXT NOT NULL,measured_at TEXT NOT NULL,download REAL,upload REAL,latency REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS network_limits(network_key TEXT PRIMARY KEY,limit_bytes INTEGER NOT NULL,warning_percentage INTEGER NOT NULL DEFAULT 80)")
         self.db.execute("CREATE TABLE IF NOT EXISTS usage_alerts(network_key TEXT NOT NULL,date TEXT NOT NULL,level TEXT NOT NULL,PRIMARY KEY(network_key,date))")
-        if "warning_percentage" not in {row[1] for row in self.db.execute("PRAGMA table_info(network_limits)")}: self.db.execute("ALTER TABLE network_limits ADD COLUMN warning_percentage INTEGER NOT NULL DEFAULT 80")
+        if "warning_percentage" not in {row[1] for row in self.db.execute("PRAGMA table_info(network_limits)")}:
+            self.db.execute("ALTER TABLE network_limits ADD COLUMN warning_percentage INTEGER NOT NULL DEFAULT 80")
         self.db.commit()
+        self._pending_writes = 0
+        self._last_commit = time.monotonic()
+
+    def flush(self, force: bool = False) -> None:
+        if self._pending_writes and (force or time.monotonic() - self._last_commit >= COMMIT_INTERVAL_SECONDS):
+            self.db.commit()
+            self._pending_writes = 0
+            self._last_commit = time.monotonic()
 
     def record(self, key: str, label: str, received: int, transmitted: int) -> None:
-        self.db.execute("INSERT INTO daily_usage(network_key,label,date,received,transmitted) VALUES(?,?,?,?,?) ON CONFLICT(network_key,date) DO UPDATE SET label=excluded.label,received=received+excluded.received,transmitted=transmitted+excluded.transmitted", (key, label, dt.date.today().isoformat(), received, transmitted)); self.db.commit()
+        if received <= 0 and transmitted <= 0:
+            return
+        self.db.execute("INSERT INTO daily_usage(network_key,label,date,received,transmitted) VALUES(?,?,?,?,?) ON CONFLICT(network_key,date) DO UPDATE SET label=excluded.label,received=received+excluded.received,transmitted=transmitted+excluded.transmitted", (key, label, dt.date.today().isoformat(), received, transmitted))
+        self._pending_writes += 1
+        self.flush()
 
     def today(self, key: str) -> tuple[int, int]:
         row = self.db.execute("SELECT received,transmitted FROM daily_usage WHERE network_key=? AND date=?", (key, dt.date.today().isoformat())).fetchone()
         return row if row else (0, 0)
+
+    def month_for(self, key: str) -> int:
+        row = self.db.execute("SELECT COALESCE(SUM(received+transmitted), 0) FROM daily_usage WHERE network_key=? AND date LIKE ?", (key, f"{dt.date.today():%Y-%m}%")).fetchone()
+        return int(row[0] or 0)
 
     def rows(self) -> list[tuple[str, int, int, int]]:
         today, month = dt.date.today().isoformat(), f"{dt.date.today():%Y-%m}%"
         return self.db.execute("SELECT MAX(label),SUM(CASE WHEN date=? THEN received+transmitted ELSE 0 END),SUM(CASE WHEN date LIKE ? THEN received+transmitted ELSE 0 END),SUM(received+transmitted) FROM daily_usage GROUP BY network_key ORDER BY MAX(date) DESC", (today, month)).fetchall()
 
     def speed(self, key: str, download: float, upload: float, latency: float) -> None:
-        self.db.execute("INSERT INTO speed_results(network_key,measured_at,download,upload,latency) VALUES(?,?,?,?,?)", (key, dt.datetime.now().isoformat(timespec="seconds"), download, upload, latency)); self.db.commit()
+        self.db.execute("INSERT INTO speed_results(network_key,measured_at,download,upload,latency) VALUES(?,?,?,?,?)", (key, dt.datetime.now().isoformat(timespec="seconds"), download, upload, latency))
+        self._pending_writes += 1
+        self.flush(force=True)
 
     def limit_config(self, key: str) -> tuple[int | None, int]:
         row = self.db.execute("SELECT limit_bytes,warning_percentage FROM network_limits WHERE network_key=?", (key,)).fetchone()
         return (row[0], row[1]) if row else (None, 80)
-    def limit(self, key: str) -> int | None: return self.limit_config(key)[0]
 
     def set_limit(self, key: str, limit: int | None, warning_percentage: int = 80) -> None:
-        if limit is None: self.db.execute("DELETE FROM network_limits WHERE network_key=?", (key,))
-        else: self.db.execute("INSERT INTO network_limits(network_key,limit_bytes,warning_percentage) VALUES(?,?,?) ON CONFLICT(network_key) DO UPDATE SET limit_bytes=excluded.limit_bytes,warning_percentage=excluded.warning_percentage", (key, limit, max(50, min(99, warning_percentage))))
-        self.db.commit()
+        if limit is None:
+            self.db.execute("DELETE FROM network_limits WHERE network_key=?", (key,))
+        else:
+            self.db.execute("INSERT INTO network_limits(network_key,limit_bytes,warning_percentage) VALUES(?,?,?) ON CONFLICT(network_key) DO UPDATE SET limit_bytes=excluded.limit_bytes,warning_percentage=excluded.warning_percentage", (key, limit, max(50, min(99, warning_percentage))))
+        self._pending_writes += 1
+        self.flush(force=True)
 
-    def claim_alert(self, key: str, total: int) -> tuple[str, int] | None:
-        limit, warning = self.limit_config(key); level = usage_alert_level(total, limit, warning)
-        if not level or not limit: return None
-        date = dt.date.today().isoformat(); previous = self.db.execute("SELECT level FROM usage_alerts WHERE network_key=? AND date=?", (key, date)).fetchone()
-        if previous and (previous[0] == level or previous[0] == "exceeded"): return None
-        self.db.execute("INSERT INTO usage_alerts(network_key,date,level) VALUES(?,?,?) ON CONFLICT(network_key,date) DO UPDATE SET level=excluded.level", (key, date, level)); self.db.commit()
+    def claim_alert(self, key: str, total: int) -> tuple[str, int, int] | None:
+        limit, warning = self.limit_config(key)
+        level = usage_alert_level(total, limit, warning)
+        if not level or not limit:
+            return None
+        date = dt.date.today().isoformat()
+        previous = self.db.execute("SELECT level FROM usage_alerts WHERE network_key=? AND date=?", (key, date)).fetchone()
+        if previous and (previous[0] == level or previous[0] == "exceeded"):
+            return None
+        self.db.execute("INSERT INTO usage_alerts(network_key,date,level) VALUES(?,?,?) ON CONFLICT(network_key,date) DO UPDATE SET level=excluded.level", (key, date, level))
+        self._pending_writes += 1
+        self.flush(force=True)
         return level, limit, warning
 
     def export_csv(self, target: str) -> int:
+        self.flush(force=True)
         rows = self.db.execute("SELECT label,network_key,date,received,transmitted,received+transmitted FROM daily_usage ORDER BY date DESC,label").fetchall()
         with open(target, "w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.writer(handle); writer.writerow(["الشبكة", "المعرف", "التاريخ", "التنزيل بالبايت", "الرفع بالبايت", "الإجمالي بالبايت"]); writer.writerows(rows)
+            writer = csv.writer(handle)
+            writer.writerow(["الشبكة", "المعرف", "التاريخ", "التنزيل بالبايت", "الرفع بالبايت", "الإجمالي بالبايت"])
+            writer.writerows(rows)
         return len(rows)
+
+    def close(self) -> None:
+        self.flush(force=True)
+        self.db.close()
 
 
 class Monitor:
-    def __init__(self, store: Store) -> None: self.store, self.last_key, self.last_counter = store, None, None
+    """Reads one active interface and caches the expensive SSID lookup briefly."""
+
+    def __init__(self, store: Store) -> None:
+        self.store, self.last_key, self.last_counter = store, None, None
+        self._ssid_value: str | None = None
+        self._ssid_interface: str | None = None
+        self._ssid_checked_at = 0.0
+
     def tick(self) -> tuple[str, str] | None:
         interface = active_interface()
-        if not interface: self.last_key, self.last_counter = None, None; return None
-        name = ssid(); key, label = (f"wifi:{name}", name) if name else (f"interface:{interface}", f"واجهة {interface}")
-        counter = psutil.net_io_counters(pernic=True)[interface]; current = (counter.bytes_recv, counter.bytes_sent)
+        if not interface:
+            self.last_key, self.last_counter, self._ssid_interface = None, None, None
+            return None
+        now = time.monotonic()
+        if interface != self._ssid_interface or now - self._ssid_checked_at >= SSID_CACHE_SECONDS:
+            self._ssid_value, self._ssid_interface, self._ssid_checked_at = ssid(), interface, now
+        name = self._ssid_value
+        key, label = (f"wifi:{name}", name) if name else (f"interface:{interface}", f"واجهة {interface}")
+        counter = psutil.net_io_counters(pernic=True)[interface]
+        current = (counter.bytes_recv, counter.bytes_sent)
         if key == self.last_key:
             delta = safe_delta(self.last_counter, current)
-            if delta: self.store.record(key, label, *delta)
+            if delta:
+                self.store.record(key, label, *delta)
         self.last_key, self.last_counter = key, current
         return key, label
 
 
 def speed_test(key: str, store: Store) -> tuple[float, float, float]:
     started = time.perf_counter()
-    with urllib.request.urlopen(f"https://speed.cloudflare.com/__down?bytes=0&t={time.time()}", timeout=20) as response: response.read(1)
+    with urllib.request.urlopen(f"https://speed.cloudflare.com/__down?bytes=0&t={time.time()}", timeout=20) as response:
+        response.read(1)
     latency = (time.perf_counter() - started) * 1000
     size, started = 2_000_000, time.perf_counter()
-    with urllib.request.urlopen(f"https://speed.cloudflare.com/__down?bytes={size}&t={time.time()}", timeout=45) as response: downloaded = len(response.read())
+    with urllib.request.urlopen(f"https://speed.cloudflare.com/__down?bytes={size}&t={time.time()}", timeout=45) as response:
+        downloaded = len(response.read())
     download = downloaded * 8 / ((time.perf_counter() - started) * 1_000_000)
     payload, started = b"0" * 500_000, time.perf_counter()
-    with urllib.request.urlopen(urllib.request.Request(f"https://speed.cloudflare.com/__up?t={time.time()}", data=payload, method="POST"), timeout=45) as response: response.read(1)
+    request = urllib.request.Request(f"https://speed.cloudflare.com/__up?t={time.time()}", data=payload, method="POST")
+    with urllib.request.urlopen(request, timeout=45) as response:
+        response.read(1)
     upload = len(payload) * 8 / ((time.perf_counter() - started) * 1_000_000)
-    store.speed(key, download, upload, latency); return download, upload, latency
+    store.speed(key, download, upload, latency)
+    return download, upload, latency
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
-        super().__init__(); self.title("NetMeter Suite"); self.geometry("680x570"); self.minsize(580, 470); self.configure(bg="#F6F9FC")
-        self.store, self.monitor, self.events = Store(), Monitor(Store()), Queue(); self.store = self.monitor.store
-        self.network, self.usage, self.month, self.speed, self.status = tk.StringVar(value="جارِ التحقق…"), tk.StringVar(value="—"), tk.StringVar(value="—"), tk.StringVar(value="لم يُجر اختبار بعد"), tk.StringVar(value="تتم المراقبة محليًا")
-        self.build(); self.after(100, self.poll)
+        super().__init__()
+        self.title("NetMeter Suite")
+        self.geometry("880x690")
+        self.minsize(700, 580)
+        self.configure(bg="#F3F6FA")
+        self.store = Store()
+        self.monitor = Monitor(self.store)
+        self.events: Queue[tuple[str, object]] = Queue()
+        self.network = tk.StringVar(value="جارِ التحقق من الشبكة…")
+        self.usage = tk.StringVar(value="—")
+        self.month = tk.StringVar(value="—")
+        self.speed = tk.StringVar(value="لم يُجر اختبار بعد")
+        self.status = tk.StringVar(value="تتم المراقبة محليًا، وتُحدّث القراءة كل خمس ثوانٍ.")
+        self.limit_status = tk.StringVar(value="لم يُضبط حد لهذه الشبكة بعد")
+        self.testing = False
+        self._last_table_update = 0.0
+        self.build()
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.after(150, self.poll)
 
     def build(self) -> None:
-        style = ttk.Style(self); style.theme_use("clam"); style.configure("Treeview", rowheight=31, font=("Arial", 11)); style.configure("TButton", font=("Arial", 11, "bold"), padding=8)
-        header = tk.Frame(self, bg="#102A43", height=105); header.pack(fill="x"); tk.Label(header, text="NetMeter Suite", fg="white", bg="#102A43", font=("Arial", 24, "bold")).pack(anchor="e", padx=28, pady=(22, 2)); tk.Label(header, text="مراقبة سرعة الإنترنت والاستهلاك حسب الشبكة", fg="#B5C3D3", bg="#102A43", font=("Arial", 11)).pack(anchor="e", padx=28)
-        body = tk.Frame(self, bg="#F6F9FC"); body.pack(fill="both", expand=True, padx=22, pady=18)
-        for title, variable in (("الشبكة الحالية", self.network), ("استهلاك اليوم لهذه الشبكة", self.usage), ("استهلاك هذا الشهر", self.month), ("آخر قياس", self.speed)):
-            card = tk.Frame(body, bg="white", highlightbackground="#DCE5EF", highlightthickness=1); card.pack(fill="x", pady=5); tk.Label(card, text=title, bg="white", fg="#5D6B7B", font=("Arial", 10)).pack(anchor="e", padx=14, pady=(10, 0)); tk.Label(card, textvariable=variable, bg="white", fg="#102A43", font=("Arial", 15, "bold")).pack(anchor="e", padx=14, pady=(2, 10))
-        self.progress = ttk.Progressbar(body, mode="determinate", maximum=100); self.progress.pack(fill="x", pady=(2, 8)); actions = tk.Frame(body, bg="#F6F9FC"); actions.pack(fill="x", pady=9); ttk.Button(actions, text="قياس السرعة الآن", command=self.run_test).pack(side="right"); ttk.Button(actions, text="تعيين حد الشبكة", command=self.configure_limit).pack(side="right", padx=8); ttk.Button(actions, text="تصدير CSV", command=self.export_csv).pack(side="right", padx=8); ttk.Button(actions, text="تحديث الشبكات", command=self.refresh_table).pack(side="right", padx=8)
-        self.table = ttk.Treeview(body, columns=("network", "today", "month", "all"), show="headings", height=5); [self.table.heading(key, text=title) for key, title in (("network", "الشبكة"), ("today", "اليوم"), ("month", "الشهر"), ("all", "الإجمالي"))]; [self.table.column(key, width=150 if key == "network" else 115, anchor="e") for key in ("network", "today", "month", "all")]; self.table.pack(fill="both", expand=True); tk.Label(body, textvariable=self.status, bg="#F6F9FC", fg="#5D6B7B", font=("Arial", 10)).pack(anchor="e", pady=(8, 0)); self.refresh_table()
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Treeview", rowheight=33, font=("Arial", 10), background="#FFFFFF", fieldbackground="#FFFFFF", foreground="#0F2438", borderwidth=0)
+        style.configure("Treeview.Heading", font=("Arial", 10, "bold"), background="#E8EEF5", foreground="#38516A", relief="flat")
+        style.map("Treeview", background=[("selected", "#DCEFF2")], foreground=[("selected", "#0B4250")])
+        style.configure("Primary.TButton", font=("Arial", 10, "bold"), padding=(14, 10), background="#0F766E", foreground="#FFFFFF", borderwidth=0)
+        style.map("Primary.TButton", background=[("active", "#0B615A"), ("disabled", "#9ABCB8")])
+        style.configure("Secondary.TButton", font=("Arial", 10, "bold"), padding=(12, 9), background="#E7EEF6", foreground="#12496A", borderwidth=0)
+        style.map("Secondary.TButton", background=[("active", "#D6E3EF")])
+
+        header = tk.Frame(self, bg="#0B1F33", height=112)
+        header.pack(fill="x")
+        tk.Label(header, text="NetMeter Suite", fg="#FFFFFF", bg="#0B1F33", font=("Arial", 25, "bold")).pack(anchor="e", padx=30, pady=(23, 1))
+        tk.Label(header, text="مراقبة الاستهلاك وسرعة الإنترنت بحسب الشبكة — بياناتك تبقى على جهازك", fg="#B9C9D9", bg="#0B1F33", font=("Arial", 10)).pack(anchor="e", padx=30)
+
+        body = tk.Frame(self, bg="#F3F6FA")
+        body.pack(fill="both", expand=True, padx=24, pady=18)
+        body.grid_columnconfigure((0, 1), weight=1, uniform="metric")
+
+        self._metric_card(body, "الشبكة المتصلة الآن", self.network, "تفصل السجلات تلقائيًا لكل شبكة", 0, 0)
+        self._metric_card(body, "استهلاك اليوم لهذه الشبكة", self.usage, "تنزيل ورفع اليوم الحالي", 0, 1)
+        self._metric_card(body, "استهلاك هذا الشهر", self.month, "إجمالي الشهر للشبكة الحالية", 1, 0)
+        self._metric_card(body, "آخر قياس للسرعة", self.speed, "اختبار يدوي يستهلك بيانات فعلية", 1, 1)
+
+        limit_box = tk.Frame(body, bg="#FFFFFF", highlightbackground="#DCE5EF", highlightthickness=1)
+        limit_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 9))
+        tk.Label(limit_box, text="حالة حد البيانات", bg="#FFFFFF", fg="#5D6B7B", font=("Arial", 10, "bold")).pack(anchor="e", padx=15, pady=(12, 2))
+        self.progress = ttk.Progressbar(limit_box, mode="determinate", maximum=100)
+        self.progress.pack(fill="x", padx=15, pady=(2, 5))
+        tk.Label(limit_box, textvariable=self.limit_status, bg="#FFFFFF", fg="#52677B", font=("Arial", 10), anchor="e", justify="right").pack(fill="x", padx=15, pady=(0, 12))
+
+        actions = tk.Frame(body, bg="#F3F6FA")
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 12))
+        self.test_button = ttk.Button(actions, text="قياس السرعة الآن", style="Primary.TButton", command=self.run_test)
+        self.test_button.pack(side="right")
+        ttk.Button(actions, text="تعيين حد الشبكة", style="Secondary.TButton", command=self.configure_limit).pack(side="right", padx=8)
+        ttk.Button(actions, text="تصدير CSV", style="Secondary.TButton", command=self.export_csv).pack(side="right", padx=8)
+        ttk.Button(actions, text="تحديث التقرير", style="Secondary.TButton", command=self.refresh_table).pack(side="right", padx=8)
+
+        table_box = tk.Frame(body, bg="#FFFFFF", highlightbackground="#DCE5EF", highlightthickness=1)
+        table_box.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        body.grid_rowconfigure(4, weight=1)
+        tk.Label(table_box, text="ملخص الشبكات المسجلة", bg="#FFFFFF", fg="#17354F", font=("Arial", 12, "bold")).pack(anchor="e", padx=15, pady=(12, 8))
+        self.table = ttk.Treeview(table_box, columns=("network", "today", "month", "all"), show="headings", height=5)
+        for key, title in (("network", "الشبكة"), ("today", "اليوم"), ("month", "الشهر"), ("all", "الإجمالي")):
+            self.table.heading(key, text=title)
+            self.table.column(key, width=230 if key == "network" else 150, anchor="e", stretch=True)
+        self.table.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        footer = tk.Frame(self, bg="#E8EEF5")
+        footer.pack(fill="x")
+        tk.Label(footer, textvariable=self.status, bg="#E8EEF5", fg="#415B73", font=("Arial", 10), anchor="e", justify="right").pack(fill="x", padx=24, pady=10)
+        self.refresh_table()
+
+    def _metric_card(self, parent: tk.Widget, title: str, variable: tk.StringVar, hint: str, row: int, column: int) -> None:
+        card = tk.Frame(parent, bg="#FFFFFF", highlightbackground="#DCE5EF", highlightthickness=1)
+        card.grid(row=row, column=column, sticky="ew", padx=(0, 7) if column == 0 else (7, 0), pady=5)
+        tk.Label(card, text=title, bg="#FFFFFF", fg="#63778B", font=("Arial", 10, "bold")).pack(anchor="e", padx=15, pady=(13, 2))
+        tk.Label(card, textvariable=variable, bg="#FFFFFF", fg="#102A43", font=("Arial", 16, "bold"), anchor="e", justify="right", wraplength=360).pack(fill="x", padx=15, pady=(0, 3))
+        tk.Label(card, text=hint, bg="#FFFFFF", fg="#7B8C9C", font=("Arial", 9), anchor="e", justify="right").pack(fill="x", padx=15, pady=(0, 13))
 
     def poll(self) -> None:
         active = self.monitor.tick()
         if active:
-            key, label = active; received, sent = self.store.today(key); total = received + sent; limit, warning = self.store.limit_config(key); self.network.set(label); self.usage.set(f"{format_bytes(total)} اليوم" + (f" من حد {format_bytes(limit)}" if limit else "")); month = next((row[2] for row in self.store.rows() if row[0] == label), 0); self.month.set(format_bytes(month)); self.progress["value"] = min(100, total * 100 / limit) if limit else 0; self.status.set(f"التحذير عند {warning}٪" if limit else "عيّن حدًا للحصول على التنبيهات"); self.present_alert(self.store.claim_alert(key, total), label, total)
-        else: self.network.set("لا توجد واجهة شبكة متصلة")
+            key, label = active
+            received, sent = self.store.today(key)
+            total = received + sent
+            limit, warning = self.store.limit_config(key)
+            self.network.set(label)
+            self.usage.set(f"{format_bytes(total)} اليوم" + (f" من حد {format_bytes(limit)}" if limit else ""))
+            self.month.set(format_bytes(self.store.month_for(key)))
+            percent = min(100, total * 100 / limit) if limit else 0
+            self.progress["value"] = percent
+            self.limit_status.set(f"{percent:.0f}٪ من الحد · التحذير عند {warning}٪" if limit else "عيّن حدًا لتلقي تحذير عند الاقتراب أو التجاوز")
+            self.status.set(f"المراقبة نشطة على: {label} · آخر تحديث {dt.datetime.now():%H:%M:%S}")
+            self.present_alert(self.store.claim_alert(key, total), label, total)
+            if time.monotonic() - self._last_table_update > 20:
+                self.refresh_table()
+        else:
+            self.network.set("لا توجد واجهة شبكة متصلة")
+            self.status.set("اتصل بشبكة Wi‑Fi أو شبكة سلكية لبدء المراقبة.")
+
         try:
             while True:
                 kind, value = self.events.get_nowait()
                 if kind == "speed":
-                    down, up, latency = value; self.speed.set(f"تنزيل {down:.1f} Mbps   •   رفع {up:.1f} Mbps   •   {latency:.0f} ms"); self.status.set("اكتمل قياس السرعة"); self.refresh_table()
-                else: self.status.set(f"تعذر قياس السرعة: {value}")
-        except Empty: pass
-        self.after(5000, self.poll)
+                    down, up, latency = value  # type: ignore[misc]
+                    self.speed.set(f"تنزيل {down:.1f} Mbps  •  رفع {up:.1f} Mbps  •  {latency:.0f} ms")
+                    self.status.set("اكتمل قياس السرعة وحُفظ محليًا.")
+                    self.refresh_table()
+                else:
+                    self.status.set(f"تعذر قياس السرعة: {value}")
+                self.testing = False
+                self.test_button.state(["!disabled"])
+        except Empty:
+            pass
+        self.store.flush()
+        self.after(POLL_INTERVAL_MS, self.poll)
 
     def refresh_table(self) -> None:
         self.table.delete(*self.table.get_children())
-        for label, today, month, all_time in self.store.rows(): self.table.insert("", "end", values=(label, format_bytes(today), format_bytes(month), format_bytes(all_time)))
+        for label, today, month, all_time in self.store.rows():
+            self.table.insert("", "end", values=(label, format_bytes(today), format_bytes(month), format_bytes(all_time)))
+        self._last_table_update = time.monotonic()
 
     def configure_limit(self) -> None:
         key = self.monitor.last_key
-        if not key: self.status.set("اتصل بالشبكة التي تريد تعيين الحد لها أولاً"); return
-        current, current_warning = self.store.limit_config(key); value = simpledialog.askfloat("حد استهلاك الشبكة", "أدخل الحد اليومي لهذه الشبكة بالميغابايت. أدخل 0 لإلغاء الحد.", initialvalue=(current / 1024 / 1024 if current else None), minvalue=0, parent=self)
-        if value is None: return
+        if not key:
+            self.status.set("اتصل بالشبكة التي تريد تعيين الحد لها أولًا.")
+            return
+        current, current_warning = self.store.limit_config(key)
+        value = simpledialog.askfloat("حد استهلاك الشبكة", "أدخل الحد اليومي لهذه الشبكة بالميغابايت. أدخل 0 لإلغاء الحد.", initialvalue=(current / 1024 / 1024 if current else None), minvalue=0, parent=self)
+        if value is None:
+            return
         warning = simpledialog.askinteger("عتبة التحذير", "أدخل نسبة التحذير (من 50 إلى 99).", initialvalue=current_warning, minvalue=50, maxvalue=99, parent=self)
-        if warning is None: return
-        self.store.set_limit(key, int(value * 1024 * 1024) if value > 0 else None, warning); self.status.set(f"تم حفظ الحد. يظهر التحذير عند {warning}٪ وتنبيه تجاوز عند 100٪.")
+        if warning is None:
+            return
+        self.store.set_limit(key, int(value * 1024 * 1024) if value > 0 else None, warning)
+        self.status.set(f"تم حفظ الحد. يظهر التحذير عند {warning}٪ وتنبيه التجاوز عند 100٪.")
 
     def present_alert(self, alert: tuple[str, int, int] | None, label: str, total: int) -> None:
-        if not alert: return
-        level, limit, _ = alert; self.bell()
-        if level == "exceeded": messagebox.showwarning("تم تجاوز حد البيانات", f"{label}: استخدمت {format_bytes(total)} من حد {format_bytes(limit)} اليوم.", parent=self)
-        else: messagebox.showwarning("اقتربت من حد البيانات", f"{label}: استخدمت {format_bytes(total)} من حد {format_bytes(limit)} اليوم.", parent=self)
+        if not alert:
+            return
+        level, limit, _ = alert
+        self.bell()
+        title = "تم تجاوز حد البيانات" if level == "exceeded" else "اقتربت من حد البيانات"
+        messagebox.showwarning(title, f"{label}: استخدمت {format_bytes(total)} من حد {format_bytes(limit)} اليوم.", parent=self)
 
     def run_test(self) -> None:
-        if not self.monitor.last_key: self.status.set("اتصل بالإنترنت أولاً ثم أعد المحاولة"); return
-        self.status.set("جارِ قياس السرعة…")
+        if not self.monitor.last_key:
+            self.status.set("اتصل بالإنترنت أولًا ثم أعد المحاولة.")
+            return
+        if self.testing:
+            return
+        self.testing = True
+        self.test_button.state(["disabled"])
+        self.status.set("جارِ قياس السرعة… لا تغلق التطبيق حتى يكتمل الاختبار.")
+        key = self.monitor.last_key
+
         def worker() -> None:
-            try: self.events.put(("speed", speed_test(self.monitor.last_key, self.store)))
-            except Exception as error: self.events.put(("error", str(error)))
+            try:
+                self.events.put(("speed", speed_test(key, self.store)))
+            except Exception as error:  # noqa: BLE001 - message is displayed to the local user
+                self.events.put(("error", str(error)))
+
         threading.Thread(target=worker, daemon=True).start()
 
     def export_csv(self) -> None:
         target = filedialog.asksaveasfilename(title="تصدير سجل NetMeter", defaultextension=".csv", initialfile=f"netmeter-{dt.date.today().isoformat()}.csv", filetypes=[("CSV", "*.csv")])
-        if not target: return
-        count = self.store.export_csv(target); self.status.set(f"تم تصدير {count} سجل إلى CSV")
+        if not target:
+            return
+        count = self.store.export_csv(target)
+        self.status.set(f"تم تصدير {count} سجل إلى CSV.")
+
+    def close(self) -> None:
+        self.store.close()
+        self.destroy()
 
 
-if __name__ == "__main__": App().mainloop()
+if __name__ == "__main__":
+    App().mainloop()

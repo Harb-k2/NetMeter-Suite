@@ -1,17 +1,90 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { todayKey } from "./format";
 import type { Dashboard, NetworkRecord, NetworkSnapshot, Settings, SpeedResult, Store } from "./types";
 import { isStrongerAlert, usageAlertLevel, type UsageAlertLevel } from "./usage-alert";
-const KEY = "netmeter-suite:1"; const defaults = (): Store => ({ version: 1, baseline: null, networks: {}, speedResults: [], settings: { dailyLimitBytes: null, warningPercentage: 80, foregroundMonitor: false, notificationsEnabled: true, themeMode: "system", reduceMotion: false }, alertedLimits: {}, alertHistory: [] });
-export function normalizeStore(saved: Partial<Store>): Store { return { ...defaults(), ...saved, networks: saved.networks ?? {}, speedResults: saved.speedResults ?? [], alertedLimits: saved.alertedLimits ?? {}, alertHistory: saved.alertHistory ?? [], settings: { ...defaults().settings, ...(saved.settings ?? {}) } }; }
-export async function load(): Promise<Store> { try { const raw = await AsyncStorage.getItem(KEY); return normalizeStore(raw ? JSON.parse(raw) as Partial<Store> : {}); } catch { return defaults(); } }
-const save = (value: Store) => AsyncStorage.setItem(KEY, JSON.stringify(value));
-function recordFor(store: Store, snap: NetworkSnapshot): NetworkRecord { return store.networks[snap.network.id] ?? { id: snap.network.id, label: snap.network.label, kind: snap.network.kind, lastSeenAt: snap.capturedAt, daily: {} }; }
-export async function capture(snap: NetworkSnapshot): Promise<Store> { const store = await load(), record = recordFor(store, snap), previous = store.baseline; if (previous?.networkId === snap.network.id && previous.receivedBytes !== null && previous.transmittedBytes !== null && snap.receivedBytes !== null && snap.transmittedBytes !== null && snap.receivedBytes >= previous.receivedBytes && snap.transmittedBytes >= previous.transmittedBytes) { const date = todayKey(new Date(snap.capturedAt)), day = record.daily[date] ?? { date, receivedBytes: 0, transmittedBytes: 0 }; day.receivedBytes += snap.receivedBytes - previous.receivedBytes; day.transmittedBytes += snap.transmittedBytes - previous.transmittedBytes; record.daily[date] = day; } record.label = snap.network.label; record.kind = snap.network.kind; record.lastSeenAt = snap.capturedAt; store.networks[record.id] = record; store.baseline = { networkId: snap.network.id, receivedBytes: snap.receivedBytes, transmittedBytes: snap.transmittedBytes }; await save(store); return store; }
+
+const KEY = "netmeter-suite:1";
+let cachedStore: Store | null = null;
+let loadingStore: Promise<Store> | null = null;
+
+const defaults = (): Store => ({ version: 1, baseline: null, networks: {}, speedResults: [], settings: { dailyLimitBytes: null, warningPercentage: 80, foregroundMonitor: false, notificationsEnabled: true, themeMode: "system", reduceMotion: false }, alertedLimits: {}, alertHistory: [] });
+
+export function normalizeStore(saved: Partial<Store>): Store {
+  return { ...defaults(), ...saved, networks: saved.networks ?? {}, speedResults: saved.speedResults ?? [], alertedLimits: saved.alertedLimits ?? {}, alertHistory: saved.alertHistory ?? [], settings: { ...defaults().settings, ...(saved.settings ?? {}) } };
+}
+
+export async function load(): Promise<Store> {
+  if (cachedStore) return cachedStore;
+  if (!loadingStore) loadingStore = AsyncStorage.getItem(KEY).then((raw) => normalizeStore(raw ? JSON.parse(raw) as Partial<Store> : {})).catch(() => defaults()).then((store) => { cachedStore = store; return store; }).finally(() => { loadingStore = null; });
+  return loadingStore;
+}
+
+const save = async (value: Store) => { cachedStore = value; await AsyncStorage.setItem(KEY, JSON.stringify(value)); };
+
+function recordFor(store: Store, snap: NetworkSnapshot): NetworkRecord {
+  return store.networks[snap.network.id] ?? { id: snap.network.id, label: snap.network.label, kind: snap.network.kind, lastSeenAt: snap.capturedAt, daily: {} };
+}
+
+function applySnapshot(store: Store, snap: NetworkSnapshot) {
+  const record = recordFor(store, snap);
+  const previous = store.baseline;
+  if (previous?.networkId === snap.network.id && previous.receivedBytes !== null && previous.transmittedBytes !== null && snap.receivedBytes !== null && snap.transmittedBytes !== null && snap.receivedBytes >= previous.receivedBytes && snap.transmittedBytes >= previous.transmittedBytes) {
+    const date = todayKey(new Date(snap.capturedAt));
+    const day = record.daily[date] ?? { date, receivedBytes: 0, transmittedBytes: 0 };
+    day.receivedBytes += snap.receivedBytes - previous.receivedBytes;
+    day.transmittedBytes += snap.transmittedBytes - previous.transmittedBytes;
+    record.daily[date] = day;
+  }
+  record.label = snap.network.label;
+  record.kind = snap.network.kind;
+  record.lastSeenAt = snap.capturedAt;
+  store.networks[record.id] = record;
+  store.baseline = { networkId: snap.network.id, receivedBytes: snap.receivedBytes, transmittedBytes: snap.transmittedBytes };
+}
+
+type UsageAlert = { level: UsageAlertLevel; totalBytes: number; limitBytes: number };
+
+function takeUsageAlert(store: Store, networkId: string): UsageAlert | null {
+  const limitBytes = store.settings.dailyLimitBytes;
+  const network = store.networks[networkId];
+  const usage = network?.daily[todayKey()];
+  const totalBytes = (usage?.receivedBytes ?? 0) + (usage?.transmittedBytes ?? 0);
+  const level = usageAlertLevel(totalBytes, limitBytes, store.settings.warningPercentage);
+  if (!level || !limitBytes || !network || !store.settings.notificationsEnabled) return null;
+  const alertKey = `${networkId}:${todayKey()}`;
+  if (!isStrongerAlert(level, store.alertedLimits[alertKey])) return null;
+  store.alertedLimits[alertKey] = level;
+  store.alertHistory = [{ id: `${alertKey}:${level}`, networkId, networkLabel: network.label, level, totalBytes, limitBytes, createdAt: new Date().toISOString() }, ...store.alertHistory].slice(0, 100);
+  return { level, totalBytes, limitBytes };
+}
+
+export async function capture(snap: NetworkSnapshot): Promise<Store> {
+  const store = await load();
+  applySnapshot(store, snap);
+  await save(store);
+  return store;
+}
+
+/** تسجّل اللقطة وتقيّم التنبيه ضمن عملية حفظ واحدة لتقليل عمليات AsyncStorage. */
+export async function captureWithAlert(snap: NetworkSnapshot): Promise<{ store: Store; alert: UsageAlert | null }> {
+  const store = await load();
+  applySnapshot(store, snap);
+  const alert = takeUsageAlert(store, snap.network.id);
+  await save(store);
+  return { store, alert };
+}
+
 export async function setSettings(settings: Settings) { const store = await load(); store.settings = settings; await save(store); return store; }
-export async function claimUsageAlert(store: Store, networkId: string): Promise<{ level: UsageAlertLevel; totalBytes: number; limitBytes: number } | null> { const limitBytes = store.settings.dailyLimitBytes, network = store.networks[networkId]; const usage = network?.daily[todayKey()]; const totalBytes = (usage?.receivedBytes ?? 0) + (usage?.transmittedBytes ?? 0); const level = usageAlertLevel(totalBytes, limitBytes, store.settings.warningPercentage); if (!level || !limitBytes || !network || !store.settings.notificationsEnabled) return null; const alertKey = `${networkId}:${todayKey()}`; if (!isStrongerAlert(level, store.alertedLimits[alertKey])) return null; store.alertedLimits[alertKey] = level; store.alertHistory = [{ id: `${alertKey}:${level}`, networkId, networkLabel: network.label, level, totalBytes, limitBytes, createdAt: new Date().toISOString() }, ...store.alertHistory].slice(0, 100); await save(store); return { level, totalBytes, limitBytes }; }
+
+export async function claimUsageAlert(store: Store, networkId: string): Promise<UsageAlert | null> { const alert = takeUsageAlert(store, networkId); if (alert) await save(store); return alert; }
+
 export async function saveSpeed(result: SpeedResult) { const store = await load(); store.speedResults = [result, ...store.speedResults].slice(0, 40); await save(store); return store; }
-export async function clear() { await AsyncStorage.removeItem(KEY); }
+
+export async function clear() { cachedStore = null; loadingStore = null; await AsyncStorage.removeItem(KEY); }
+
 export async function replaceStore(value: Partial<Store>) { const next = normalizeStore(value); await save(next); return next; }
+
 export function dashboard(store: Store, snap: NetworkSnapshot | null): Dashboard { const network = snap ? store.networks[snap.network.id] ?? null : null; return { snapshot: snap, network, usage: network?.daily[todayKey()] ?? null, lastSpeed: snap ? store.speedResults.find((item) => item.networkId === snap.network.id) ?? null : null, settings: store.settings }; }
+
 export const sortedNetworks = (store: Store) => Object.values(store.networks).sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
