@@ -14,27 +14,21 @@ export function ScreenHeader({ title, subtitle, badge }: { title: string; subtit
   );
 }
 
-export function PrimaryButton({ label, onPress, loading = false, disabled = false, icon }: { label: string; onPress: () => void; loading?: boolean; disabled?: boolean; icon?: ReactNode }) {
+export function PrimaryButton({ label, onPress, loading = false, loadingLabel = "جارِ التنفيذ…", disabled = false, icon }: { label: string; onPress: () => void; loading?: boolean; loadingLabel?: string; disabled?: boolean; icon?: ReactNode }) {
   const colors = useColors();
   const inactive = loading || disabled;
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ disabled: inactive, busy: loading }}
-      disabled={inactive}
-      onPress={onPress}
-      style={({ pressed }) => ({ alignItems: "center", justifyContent: "center", flexDirection: "row-reverse", gap: 8, minHeight: 54, borderRadius: 17, paddingHorizontal: 18, backgroundColor: colors.tint, opacity: inactive ? 0.58 : pressed ? 0.86 : 1, transform: [{ scale: pressed && !inactive ? 0.985 : 1 }] })}
-    >
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled: inactive, busy: loading }} disabled={inactive} onPress={onPress} style={({ pressed }) => ({ alignItems: "center", justifyContent: "center", flexDirection: "row-reverse", gap: 8, minHeight: 54, borderRadius: 17, paddingHorizontal: 18, backgroundColor: colors.tint, opacity: inactive ? 0.58 : pressed ? 0.86 : 1, transform: [{ scale: pressed && !inactive ? 0.985 : 1 }] })}>
       {loading ? <ActivityIndicator color="#FFFFFF" /> : icon}
-      <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "800" }}>{loading ? "جارِ التنفيذ…" : label}</Text>
+      <Text style={{ color: "#FFFFFF", fontSize: 16, fontWeight: "800" }}>{loading ? loadingLabel : label}</Text>
     </Pressable>
   );
 }
 
-export function SecondaryButton({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
+export function SecondaryButton({ label, onPress, disabled = false, hint }: { label: string; onPress: () => void; disabled?: boolean; hint?: string }) {
   const colors = useColors();
   return (
-    <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={({ pressed }) => ({ alignItems: "center", justifyContent: "center", minHeight: 50, borderRadius: 16, paddingHorizontal: 14, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, opacity: disabled ? 0.5 : pressed ? 0.7 : 1 })}>
+    <Pressable accessibilityRole="button" accessibilityHint={hint} disabled={disabled} onPress={onPress} style={({ pressed }) => ({ alignItems: "center", justifyContent: "center", minHeight: 50, borderRadius: 16, paddingHorizontal: 14, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, opacity: disabled ? 0.5 : pressed ? 0.7 : 1 })}>
       <Text style={{ color: colors.tint, textAlign: "center", fontWeight: "800" }}>{label}</Text>
     </Pressable>
   );
@@ -57,4 +51,10 @@ export function UsageProgress({ percent, detail, label = "نسبة الحد ال
       <Text style={{ color: colors.muted, textAlign: "right", fontSize: 12, lineHeight: 18 }}>{detail}</Text>
     </View>
   );
+}
+
+export function InsightCard({ title, value, detail, tone = "neutral" }: { title: string; value: string; detail: string; tone?: "neutral" | "success" | "warning" | "error" }) {
+  const colors = useColors();
+  const color = tone === "success" ? colors.success : tone === "warning" ? colors.warning : tone === "error" ? colors.error : colors.tint;
+  return <View style={{ borderRadius: 17, borderWidth: 1, borderColor: `${color}32`, backgroundColor: `${color}0F`, padding: 14, gap: 4 }}><Text style={{ color: colors.muted, textAlign: "right", fontSize: 12, fontWeight: "700" }}>{title}</Text><Text style={{ color, textAlign: "right", fontSize: 18, fontWeight: "800" }}>{value}</Text><Text style={{ color: colors.muted, textAlign: "right", fontSize: 12, lineHeight: 17 }}>{detail}</Text></View>;
 }

@@ -225,10 +225,14 @@ class App(tk.Tk):
         self.speed = tk.StringVar(value="لم يُجر اختبار بعد")
         self.status = tk.StringVar(value="تتم المراقبة محليًا، وتُحدّث القراءة كل خمس ثوانٍ.")
         self.limit_status = tk.StringVar(value="لم يُضبط حد لهذه الشبكة بعد")
+        self.live_state = tk.StringVar(value="● بدء المراقبة المحلية")
         self.testing = False
         self._last_table_update = 0.0
         self.build()
         self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind_all("<F5>", lambda _event: self.refresh_report())
+        self.bind_all("<Control-e>", lambda _event: self.export_csv())
+        self.bind_all("<Control-l>", lambda _event: self.configure_limit())
         self.after(150, self.poll)
 
     def build(self) -> None:
@@ -241,11 +245,15 @@ class App(tk.Tk):
         style.map("Primary.TButton", background=[("active", "#0B615A"), ("disabled", "#9ABCB8")])
         style.configure("Secondary.TButton", font=("Arial", 10, "bold"), padding=(12, 9), background="#E7EEF6", foreground="#12496A", borderwidth=0)
         style.map("Secondary.TButton", background=[("active", "#D6E3EF")])
+        style.configure("Safe.Horizontal.TProgressbar", troughcolor="#E8EEF5", background="#16826F", bordercolor="#E8EEF5", lightcolor="#16826F", darkcolor="#16826F")
+        style.configure("Warning.Horizontal.TProgressbar", troughcolor="#E8EEF5", background="#D98B13", bordercolor="#E8EEF5", lightcolor="#D98B13", darkcolor="#D98B13")
+        style.configure("Critical.Horizontal.TProgressbar", troughcolor="#E8EEF5", background="#C43D4D", bordercolor="#E8EEF5", lightcolor="#C43D4D", darkcolor="#C43D4D")
 
         header = tk.Frame(self, bg="#0B1F33", height=112)
         header.pack(fill="x")
         tk.Label(header, text="NetMeter Suite", fg="#FFFFFF", bg="#0B1F33", font=("Arial", 25, "bold")).pack(anchor="e", padx=30, pady=(23, 1))
         tk.Label(header, text="مراقبة الاستهلاك وسرعة الإنترنت بحسب الشبكة — بياناتك تبقى على جهازك", fg="#B9C9D9", bg="#0B1F33", font=("Arial", 10)).pack(anchor="e", padx=30)
+        tk.Label(header, textvariable=self.live_state, fg="#8EE5D0", bg="#0B1F33", font=("Arial", 9, "bold")).pack(anchor="e", padx=30, pady=(4, 0))
 
         body = tk.Frame(self, bg="#F3F6FA")
         body.pack(fill="both", expand=True, padx=24, pady=18)
@@ -259,7 +267,7 @@ class App(tk.Tk):
         limit_box = tk.Frame(body, bg="#FFFFFF", highlightbackground="#DCE5EF", highlightthickness=1)
         limit_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 9))
         tk.Label(limit_box, text="حالة حد البيانات", bg="#FFFFFF", fg="#5D6B7B", font=("Arial", 10, "bold")).pack(anchor="e", padx=15, pady=(12, 2))
-        self.progress = ttk.Progressbar(limit_box, mode="determinate", maximum=100)
+        self.progress = ttk.Progressbar(limit_box, mode="determinate", maximum=100, style="Safe.Horizontal.TProgressbar")
         self.progress.pack(fill="x", padx=15, pady=(2, 5))
         tk.Label(limit_box, textvariable=self.limit_status, bg="#FFFFFF", fg="#52677B", font=("Arial", 10), anchor="e", justify="right").pack(fill="x", padx=15, pady=(0, 12))
 
@@ -269,7 +277,8 @@ class App(tk.Tk):
         self.test_button.pack(side="right")
         ttk.Button(actions, text="تعيين حد الشبكة", style="Secondary.TButton", command=self.configure_limit).pack(side="right", padx=8)
         ttk.Button(actions, text="تصدير CSV", style="Secondary.TButton", command=self.export_csv).pack(side="right", padx=8)
-        ttk.Button(actions, text="تحديث التقرير", style="Secondary.TButton", command=self.refresh_table).pack(side="right", padx=8)
+        ttk.Button(actions, text="تحديث التقرير", style="Secondary.TButton", command=self.refresh_report).pack(side="right", padx=8)
+        ttk.Button(actions, text="نسخ اسم الشبكة", style="Secondary.TButton", command=self.copy_network).pack(side="right", padx=8)
 
         table_box = tk.Frame(body, bg="#FFFFFF", highlightbackground="#DCE5EF", highlightthickness=1)
         table_box.grid(row=4, column=0, columnspan=2, sticky="nsew")
@@ -284,6 +293,7 @@ class App(tk.Tk):
         footer = tk.Frame(self, bg="#E8EEF5")
         footer.pack(fill="x")
         tk.Label(footer, textvariable=self.status, bg="#E8EEF5", fg="#415B73", font=("Arial", 10), anchor="e", justify="right").pack(fill="x", padx=24, pady=10)
+        tk.Label(footer, text="F5 تحديث التقرير  •  Ctrl+E تصدير CSV  •  Ctrl+L تعيين الحد", bg="#E8EEF5", fg="#75889A", font=("Arial", 8), anchor="e", justify="right").pack(fill="x", padx=24, pady=(0, 9))
         self.refresh_table()
 
     def _metric_card(self, parent: tk.Widget, title: str, variable: tk.StringVar, hint: str, row: int, column: int) -> None:
@@ -305,14 +315,17 @@ class App(tk.Tk):
             self.month.set(format_bytes(self.store.month_for(key)))
             percent = min(100, total * 100 / limit) if limit else 0
             self.progress["value"] = percent
+            self.progress.configure(style="Critical.Horizontal.TProgressbar" if percent >= 100 else "Warning.Horizontal.TProgressbar" if percent >= warning else "Safe.Horizontal.TProgressbar")
             self.limit_status.set(f"{percent:.0f}٪ من الحد · التحذير عند {warning}٪" if limit else "عيّن حدًا لتلقي تحذير عند الاقتراب أو التجاوز")
             self.status.set(f"المراقبة نشطة على: {label} · آخر تحديث {dt.datetime.now():%H:%M:%S}")
+            self.live_state.set("● مراقبة نشطة وتسجيل محلي")
             self.present_alert(self.store.claim_alert(key, total), label, total)
             if time.monotonic() - self._last_table_update > 20:
                 self.refresh_table()
         else:
             self.network.set("لا توجد واجهة شبكة متصلة")
             self.status.set("اتصل بشبكة Wi‑Fi أو شبكة سلكية لبدء المراقبة.")
+            self.live_state.set("● بانتظار اتصال الشبكة")
 
         try:
             while True:
@@ -320,7 +333,8 @@ class App(tk.Tk):
                 if kind == "speed":
                     down, up, latency = value  # type: ignore[misc]
                     self.speed.set(f"تنزيل {down:.1f} Mbps  •  رفع {up:.1f} Mbps  •  {latency:.0f} ms")
-                    self.status.set("اكتمل قياس السرعة وحُفظ محليًا.")
+                    quality = "قوي" if down >= 50 and latency <= 45 else "مستقر" if down >= 10 and latency <= 120 else "يحتاج مراجعة"
+                    self.status.set(f"اكتمل قياس السرعة وحُفظ محليًا · تقييم الاتصال: {quality}.")
                     self.refresh_table()
                 else:
                     self.status.set(f"تعذر قياس السرعة: {value}")
@@ -336,6 +350,19 @@ class App(tk.Tk):
         for label, today, month, all_time in self.store.rows():
             self.table.insert("", "end", values=(label, format_bytes(today), format_bytes(month), format_bytes(all_time)))
         self._last_table_update = time.monotonic()
+
+    def refresh_report(self) -> None:
+        self.refresh_table()
+        self.status.set("تم تحديث تقرير الشبكات من السجل المحلي.")
+
+    def copy_network(self) -> None:
+        label = self.monitor.last_key
+        if not label:
+            self.status.set("اتصل بشبكة أولًا لنسخ اسمها.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.network.get())
+        self.status.set("تم نسخ اسم الشبكة الحالية إلى الحافظة.")
 
     def configure_limit(self) -> None:
         key = self.monitor.last_key
