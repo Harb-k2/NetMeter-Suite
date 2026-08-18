@@ -8,7 +8,7 @@ const KEY = "netmeter-suite:1";
 let cachedStore: Store | null = null;
 let loadingStore: Promise<Store> | null = null;
 
-const defaults = (): Store => ({ version: 1, baseline: null, networks: {}, speedResults: [], settings: { dailyLimitBytes: null, warningPercentage: 80, foregroundMonitor: false, notificationsEnabled: true, themeMode: "system", reduceMotion: false }, alertedLimits: {}, alertHistory: [] });
+const defaults = (): Store => ({ version: 1, baseline: null, networks: {}, speedResults: [], settings: { dailyLimitBytes: null, warningPercentage: 80, foregroundMonitor: false, notificationsEnabled: true, themeMode: "system", accentColor: "blue", reduceMotion: false }, alertedLimits: {}, alertHistory: [] });
 
 export function normalizeStore(saved: Partial<Store>): Store {
   return { ...defaults(), ...saved, networks: saved.networks ?? {}, speedResults: saved.speedResults ?? [], alertedLimits: saved.alertedLimits ?? {}, alertHistory: saved.alertHistory ?? [], settings: { ...defaults().settings, ...(saved.settings ?? {}) } };

@@ -3,8 +3,11 @@
  * Full implementation lives in lib/_core/theme.ts.
  */
 export {
+  AccentColors,
   Colors,
   Fonts,
+  isAccentColor,
+  paletteFor,
   SchemeColors,
   ThemeColors,
   type ColorScheme,
