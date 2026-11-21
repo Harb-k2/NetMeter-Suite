@@ -1,4 +1,7 @@
-plugins { id 'com.android.library' }
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
 group = 'expo.modules.netmeternative'
 version = '1.0.0'
 android {
