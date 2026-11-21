@@ -21,7 +21,7 @@ import javax.crypto.spec.PBEKeySpec
 class ExpoNetmeterNativeModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("ExpoNetmeterNative")
-    AsyncFunction("getSnapshot") { currentSnapshot(requireContext()) }
+    AsyncFunction("getSnapshot") { currentSnapshot(requireNotNull(appContext.reactContext)) }
     AsyncFunction("openUsageAccessSettings") { context: Context -> context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); true }
     AsyncFunction("configureUsageLimit") { context: Context, limitBytes: Double?, notificationsEnabled: Boolean, warningPercentage: Double -> NetmeterMonitorService.configure(context, limitBytes?.toLong(), notificationsEnabled, warningPercentage.toInt()); true }
     AsyncFunction("startForegroundMonitoring") { context: Context -> NetmeterMonitorService.start(context); true }
