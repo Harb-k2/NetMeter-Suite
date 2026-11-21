@@ -1,0 +1,82 @@
+name: Build NetMeter artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate native Android project
+        run: pnpm exec expo prebuild --platform android --non-interactive
+
+      - name: Build installable debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetMeter-Android-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  windows-exe:
+    name: Windows EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Build Windows executable
+        working-directory: desktop
+        run: python -m PyInstaller --noconfirm --clean --windowed --name NetMeterSuite netmeter_desktop.py
+
+      - name: Create portable ZIP
+        working-directory: desktop
+        shell: pwsh
+        run: Compress-Archive -Path dist/NetMeterSuite/* -DestinationPath NetMeterSuite-Windows.zip -Force
+
+      - name: Upload EXE package
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetMeter-Windows-EXE
+          path: desktop/NetMeterSuite-Windows.zip
+          if-no-files-found: error
